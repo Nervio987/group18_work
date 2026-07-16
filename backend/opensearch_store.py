@@ -44,6 +44,7 @@ INDEX_SETTINGS = {
             },
             "source": {"type": "keyword"},
             "chunk_index": {"type": "integer"},
+            "knowledge_base_id": {"type": "integer"},
         }
     },
 }
@@ -74,21 +75,30 @@ def ensure_index():
         print(f"[OpenSearch] 检查索引维度时出错: {e}")
 
 
-def add_documents(chunks: list[str], source: str = "unknown"):
-    """将文本切片存入 OpenSearch"""
+def add_documents(chunks: list[str], source: str = "unknown", knowledge_base_id: int = None):
+    """将文本切片存入 OpenSearch
+
+    Args:
+        chunks: 文本片段列表
+        source: 来源标识（通常是文件名）
+        knowledge_base_id: 知识库 ID，用于模块隔离检索
+    """
     ensure_index()
     docs = []
     for i, chunk in enumerate(chunks):
         vec = embed_text(chunk)
+        doc_source = {
+            "content": chunk,
+            "embedding": vec,
+            "source": source,
+            "chunk_index": i,
+        }
+        if knowledge_base_id is not None:
+            doc_source["knowledge_base_id"] = knowledge_base_id
         docs.append({
             "_index": OPENSEARCH_INDEX,
             "_id": str(uuid.uuid4()),
-            "_source": {
-                "content": chunk,
-                "embedding": vec,
-                "source": source,
-                "chunk_index": i,
-            },
+            "_source": doc_source,
         })
 
     success, errors = bulk(_client, docs)
@@ -96,39 +106,52 @@ def add_documents(chunks: list[str], source: str = "unknown"):
     return success
 
 
-def search(query: str, top_k: int = TOP_K) -> list[dict]:
-    """混合检索：向量相似度 + BM25 关键词匹配，取并集后重排"""
+def search(query: str, top_k: int = TOP_K, knowledge_base_ids: list[int] = None) -> list[dict]:
+    """混合检索：向量相似度 + BM25 关键词匹配，取并集后重排
+
+    Args:
+        query: 查询文本
+        top_k: 返回结果数量
+        knowledge_base_ids: 限定搜索的知识库 ID 列表，None 表示搜索全部
+    """
     ensure_index()
     vec = embed_text(query)
 
+    # 构建知识库过滤条件
+    kb_filter = None
+    if knowledge_base_ids:
+        kb_filter = {"terms": {"knowledge_base_id": knowledge_base_ids}}
+
     # 1. 向量检索（多取一些候选）
     vector_k = max(top_k * 3, 10)
-    vector_body = {
-        "size": vector_k,
-        "query": {
-            "knn": {
-                "embedding": {
-                    "vector": vec,
-                    "k": vector_k,
-                }
+    vector_query = {
+        "knn": {
+            "embedding": {
+                "vector": vec,
+                "k": vector_k,
             }
-        },
+        }
     }
+    if kb_filter:
+        vector_query = {"bool": {"must": [vector_query], "filter": [kb_filter]}}
+
+    vector_body = {"size": vector_k, "query": vector_query}
     vector_resp = _client.search(index=OPENSEARCH_INDEX, body=vector_body)
     vector_hits = {h["_id"]: h for h in vector_resp["hits"]["hits"]}
 
     # 2. BM25 关键词检索（中文分词后用 multi_match）
-    bm25_body = {
-        "size": vector_k,
-        "query": {
-            "multi_match": {
-                "query": query,
-                "fields": ["content"],
-                "type": "best_fields",
-                "minimum_should_match": "30%",
-            }
-        },
+    bm25_query = {
+        "multi_match": {
+            "query": query,
+            "fields": ["content"],
+            "type": "best_fields",
+            "minimum_should_match": "30%",
+        }
     }
+    if kb_filter:
+        bm25_query = {"bool": {"must": [bm25_query], "filter": [kb_filter]}}
+
+    bm25_body = {"size": vector_k, "query": bm25_query}
     try:
         bm25_resp = _client.search(index=OPENSEARCH_INDEX, body=bm25_body)
         bm25_hits = {h["_id"]: h for h in bm25_resp["hits"]["hits"]}
