@@ -1,0 +1,39 @@
+server:
+  secret_key: "your-random-secret-key-change-this"
+  host: 0.0.0.0
+  port: 8080
+
+search:
+  default_lang: zh
+  safe_search: 0
+
+engines:
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    timeout: 30
+
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    timeout: 30
+
+  - name: bing
+    engine: bing
+    shortcut: b
+    timeout: 30
+
+  - name: google
+    engine: google
+    shortcut: g
+    timeout: 30
+
+  - name: baidu
+    engine: baidu
+    shortcut: bd
+    timeout: 30
+
+  - name: brave
+    engine: brave
+    shortcut: br
+    timeout: 30
